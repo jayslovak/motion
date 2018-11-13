@@ -29,6 +29,7 @@
  *                       - speed optimization, including bswap
  *      v1 (28-Aug-2004) - initial version
  */
+#include "translate.h"
 #include "rotate.h"
 #include <stdint.h>
 #if defined(__APPLE__)
@@ -194,16 +195,17 @@ void rotate_init(struct context *cnt){
     cnt->rotate_data.buffer_high = NULL;
 
     /*
-     * Assign the value in conf.rotate_deg to rotate_data.degrees. This way,
+     * Assign the value in conf.rotate to rotate_data.degrees. This way,
      * we have a value that is safe from changes caused by motion-control.
      */
-    if ((cnt->conf.rotate_deg % 90) > 0) {
-        MOTION_LOG(WRN, TYPE_ALL, NO_ERRNO, "Config option \"rotate\" not a multiple of 90: %d",
-                   cnt->conf.rotate_deg);
-        cnt->conf.rotate_deg = 0;     /* Disable rotation. */
+    if ((cnt->conf.rotate % 90) > 0) {
+        MOTION_LOG(WRN, TYPE_ALL, NO_ERRNO
+            ,_("Config option \"rotate\" not a multiple of 90: %d")
+            ,cnt->conf.rotate);
+        cnt->conf.rotate = 0;     /* Disable rotation. */
         cnt->rotate_data.degrees = 0; /* Force return below. */
     } else {
-        cnt->rotate_data.degrees = cnt->conf.rotate_deg % 360; /* Range: 0..359 */
+        cnt->rotate_data.degrees = cnt->conf.rotate % 360; /* Range: 0..359 */
     }
 
     if (cnt->conf.flip_axis[0]=='h') {
@@ -250,12 +252,6 @@ void rotate_init(struct context *cnt){
      * and output dimensions properly.
      */
     if (cnt->rotate_data.degrees == 0) return;
-
-    if (cnt->imgs.type != VIDEO_PALETTE_YUV420P ) {
-        cnt->rotate_data.degrees = 0;
-        MOTION_LOG(WRN, TYPE_ALL, NO_ERRNO, "Unsupported palette (%d), rotation is disabled", cnt->imgs.type);
-        return;
-    }
 
     /*
      * Allocate memory if rotating 90 or 270 degrees, because those rotations

@@ -48,11 +48,37 @@
  *    jpgutl_decode_jpeg
  */
 
+#include "translate.h"
 #include "config.h"
 #include "motion.h"
 #include "jpegutils.h"
 #include <setjmp.h>
+
+
+/* This is a workaround regarding these defines.  The config.h file defines
+ * HAVE_STDLIB_H as 1 whereas the jpeglib.h just defines it without a value.
+ * this causes massive warnings/error on mis-matched definitions.  We do not
+ * control either of these so we have to suffer through this workaround hack
+*/
+#if (HAVE_STDLIB_H == 1)
+    #undef HAVE_STDLIB_H
+    #define HAVE_STDLIB_H_ORIG 1
+#endif
+
 #include <jpeglib.h>
+
+#ifdef HAVE_STDLIB_H
+  #ifdef HAVE_STDLIB_H_ORIG
+    #undef HAVE_STDLIB_H
+    #undef HAVE_STDLIB_H_ORIG
+    #define HAVE_STDLIB_H 1
+  #else
+    #undef HAVE_STDLIB_H
+  #endif
+#endif
+
+
+
 #include <jerror.h>
 #include <assert.h>
 
@@ -90,7 +116,7 @@ static void add_huff_table(j_decompress_ptr dinfo, JHUFF_TBL **htblptr, const UI
         nsymbols += bits[len];
 
     if (nsymbols < 1 || nsymbols > 256)
-        MOTION_LOG(ERR, TYPE_ALL, NO_ERRNO, "%s: Given jpeg buffer was too small");
+        MOTION_LOG(ERR, TYPE_ALL, NO_ERRNO, _("%s: Given jpeg buffer was too small"));
 
     memcpy((*htblptr)->huffval, val, nsymbols * sizeof(UINT8));
 }
@@ -322,11 +348,6 @@ static void jpgutl_emit_message(j_common_ptr cinfo, int msg_level)
 
 }
 
-static int jpgutl_setjmp_error(struct jpgutl_error_mgr *jerr){
-    /* This is a separate function to isolate the jump */
-    return setjmp (jerr->setjmp_buffer);
-}
-
 /**
  * jpgutl_decode_jpeg
  *  Purpose:  Decompress the jpeg data_in into the img_out buffer.
@@ -342,7 +363,7 @@ static int jpgutl_setjmp_error(struct jpgutl_error_mgr *jerr){
  *    Success 0, Failure -1
  */
 int jpgutl_decode_jpeg (unsigned char *jpeg_data_in, int jpeg_data_len,
-                     unsigned int width, unsigned int height, unsigned char *img_out)
+                     unsigned int width, unsigned int height, unsigned char *volatile img_out)
 {
     JSAMPARRAY      line;           /* Array of decomp data lines */
     unsigned char  *wline;          /* Will point to line[0] */
@@ -364,7 +385,8 @@ int jpgutl_decode_jpeg (unsigned char *jpeg_data_in, int jpeg_data_len,
     jpeg_create_decompress (&dinfo);
 
     /* Establish the setjmp return context for jpgutl_error_exit to use. */
-    if (jpgutl_setjmp_error(&jerr)) {
+    if (setjmp (jerr.setjmp_buffer)) {
+        /* If we get here, the JPEG code has signaled an error. */
         jpeg_destroy_decompress (&dinfo);
         return -1;
     }
@@ -380,15 +402,15 @@ int jpgutl_decode_jpeg (unsigned char *jpeg_data_in, int jpeg_data_len,
     jpeg_start_decompress (&dinfo);
 
     if ((dinfo.output_width == 0) || (dinfo.output_height == 0)) {
-        MOTION_LOG(WRN, TYPE_VIDEO, NO_ERRNO,"Invalid JPEG image dimensions");
+        MOTION_LOG(WRN, TYPE_VIDEO, NO_ERRNO,_("Invalid JPEG image dimensions"));
         jpeg_destroy_decompress(&dinfo);
         return -1;
     }
 
     if ((dinfo.output_width != width) || (dinfo.output_height != height)) {
-        MOTION_LOG(WRN, TYPE_VIDEO, NO_ERRNO,
-                   "JPEG image size %dx%d, JPEG was %dx%d",
-                    width, height, dinfo.output_width, dinfo.output_height);
+        MOTION_LOG(WRN, TYPE_VIDEO, NO_ERRNO
+            ,_("JPEG image size %dx%d, JPEG was %dx%d")
+            ,width, height, dinfo.output_width, dinfo.output_height);
         jpeg_destroy_decompress(&dinfo);
         return -1;
     }

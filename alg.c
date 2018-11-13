@@ -425,7 +425,7 @@ void alg_threshold_tune(struct context *cnt, int diffs, int motion)
     if (sum < top * 2)
         sum = top * 2;
 
-    if (sum < cnt->conf.max_changes)
+    if (sum < cnt->conf.threshold)
         cnt->threshold = (cnt->threshold + sum) / 2;
 }
 
@@ -1242,7 +1242,7 @@ int alg_diff(struct context *cnt, unsigned char *new)
 {
     int diffs = 0;
 
-    if (alg_diff_fast(cnt, cnt->conf.max_changes / 2, new))
+    if (alg_diff_fast(cnt, cnt->conf.threshold / 2, new))
         diffs = alg_diff_standard(cnt, new);
 
     return diffs;
@@ -1258,13 +1258,13 @@ int alg_lightswitch(struct context *cnt, int diffs)
 {
     struct images *imgs = &cnt->imgs;
 
-    if (cnt->conf.lightswitch < 0)
-        cnt->conf.lightswitch = 0;
-    if (cnt->conf.lightswitch > 100)
-        cnt->conf.lightswitch = 100;
+    if (cnt->conf.lightswitch_percent < 0)
+        cnt->conf.lightswitch_percent = 0;
+    if (cnt->conf.lightswitch_percent > 100)
+        cnt->conf.lightswitch_percent = 100;
 
     /* Is lightswitch percent of the image changed? */
-    if (diffs > (imgs->motionsize * cnt->conf.lightswitch / 100))
+    if (diffs > (imgs->motionsize * cnt->conf.lightswitch_percent / 100))
         return 1;
 
     return 0;
@@ -1300,7 +1300,7 @@ int alg_switchfilter(struct context *cnt, int diffs, unsigned char *newimg)
         if (cnt->conf.text_changes) {
             char tmp[80];
             sprintf(tmp, "%d %d", lines, vertlines);
-            draw_text(newimg, cnt->imgs.width - 10, 20, cnt->imgs.width, tmp, cnt->conf.text_double);
+            draw_text(newimg, cnt->imgs.width, cnt->imgs.height, cnt->imgs.width - 10, 20, tmp, cnt->conf.text_scale);
         }
         return diffs;
     }

@@ -51,16 +51,15 @@ struct image_data;
 #include <sys/param.h>
 #include <stdint.h>
 #include <pthread.h>
+#include <microhttpd.h>
 
 #ifdef __FreeBSD__
-//It is unknown whether it is safe to put this into the if/else below on Apple and BSD
 #include <pthread_np.h>
 #endif
 
 #include "logger.h"
 #include "conf.h"
 #include "stream.h"
-#include "webhttpd.h"
 
 #include "track.h"
 #include "netcam.h"
@@ -70,18 +69,6 @@ struct image_data;
 #ifdef HAVE_MMAL
 #include "mmalcam.h"
 #endif
-
-
-#ifdef __APPLE__
-#define MOTION_PTHREAD_SETNAME(name)  pthread_setname_np(name)
-#elif defined(BSD)
-#define MOTION_PTHREAD_SETNAME(name)  pthread_set_name_np(pthread_self(), name)
-#elif HAVE_PTHREAD_SETNAME_NP
-#define MOTION_PTHREAD_SETNAME(name)  pthread_setname_np(pthread_self(), name)
-#else
-#define MOTION_PTHREAD_SETNAME(name)
-#endif
-
 
 
 /**
@@ -100,12 +87,6 @@ struct image_data;
 #define ATTRIBUTE_UNUSED
 #endif
 
-/* strerror_r() XSI vs GNU */
-#if (defined(BSD)) || ((_POSIX_C_SOURCE >= 200112L || _XOPEN_SOURCE >= 600) && ! _GNU_SOURCE)
-#define XSI_STRERROR_R
-#endif
-
-
 /*
  *  The macro below defines a version of sleep using nanosleep
  * If a signal such as SIG_CHLD interrupts the sleep we just continue sleeping
@@ -117,45 +98,19 @@ struct image_data;
                 while (nanosleep(&tv, &tv) == -1); \
         }
 
-#define CLEAR(x) memset(&(x), 0, sizeof(x))
-
-#define VIDEO_PALETTE_GREY      1       /* Linear greyscale */
-#define VIDEO_PALETTE_HI240     2       /* High 240 cube (BT848) */
-#define VIDEO_PALETTE_RGB565    3       /* 565 16 bit RGB */
-#define VIDEO_PALETTE_RGB24     4       /* 24bit RGB */
-#define VIDEO_PALETTE_RGB32     5       /* 32bit RGB */
-#define VIDEO_PALETTE_RGB555    6       /* 555 15bit RGB */
-#define VIDEO_PALETTE_YUV422    7       /* YUV422 capture */
-#define VIDEO_PALETTE_YUYV      8
-#define VIDEO_PALETTE_UYVY      9       /* The great thing about standards is ... */
-#define VIDEO_PALETTE_YUV420    10
-#define VIDEO_PALETTE_YUV411    11      /* YUV411 capture */
-#define VIDEO_PALETTE_RAW       12      /* RAW capture (BT848) */
-#define VIDEO_PALETTE_YUV422P   13      /* YUV 4:2:2 Planar */
-#define VIDEO_PALETTE_YUV411P   14      /* YUV 4:1:1 Planar */
-#define VIDEO_PALETTE_YUV420P   15      /* YUV 4:2:0 Planar */
-#define VIDEO_PALETTE_YUV410P   16      /* YUV 4:1:0 Planar */
-#define VIDEO_PALETTE_PLANAR    13      /* start of planar entries */
-#define VIDEO_PALETTE_COMPONENT 7       /* start of component entries */
-
 #define DEF_PALETTE             17
 
 /* Default picture settings */
-#define DEF_WIDTH              352
-#define DEF_HEIGHT             288
+#define DEF_WIDTH              640
+#define DEF_HEIGHT             480
 #define DEF_QUALITY             75
 #define DEF_CHANGES           1500
 
-#define DEF_MAXFRAMERATE       100
+#define DEF_MAXFRAMERATE        15
 #define DEF_NOISELEVEL          32
 
 /* Minimum time between two 'actions' (email, sms, external) */
 #define DEF_EVENT_GAP            60  /* 1 minutes */
-#define DEF_MAXMOVIETIME       3600  /* 60 minutes */
-
-#define DEF_FFMPEG_BPS      400000
-#define DEF_FFMPEG_VBR           0
-#define DEF_FFMPEG_CODEC   "mpeg4"
 
 #define DEF_INPUT               -1
 #define DEF_VIDEO_DEVICE         "/dev/video0"
@@ -169,8 +124,7 @@ struct image_data;
                                      */
 
 #define WATCHDOG_TMO            30   /* 30 sec max motion_loop interval */
-#define WATCHDOG_KILL          -60   /* -60 sec grace period before calling thread cancel */
-#define WATCHDOG_OFF          -127   /* Turn off watchdog, used when we wants to quit a thread */
+#define WATCHDOG_KILL          -10   /* 10 sec grace period before calling thread cancel */
 
 #define CONNECTION_KO           "Lost connection"
 #define CONNECTION_OK           "Connection OK"
@@ -187,10 +141,6 @@ struct image_data;
 #define DEF_TIMEPATH            "%Y%m%d-timelapse"
 
 #define DEF_TIMELAPSE_MODE      "daily"
-
-/* Do not break this line into two or more. Must be ONE line */
-#define DEF_SQL_QUERY_START "sql_query_start insert into security_events(camera, event_time_stamp) values('%t', '%Y-%m-%d %T')"
-#define DEF_SQL_QUERY       "sql_query insert into security_file(camera, filename, frame, file_type, time_stamp) values('%t', '%f', '%q', '%n', '%Y-%m-%d %T')"
 
 /* OUTPUT Image types */
 #define IMAGE_TYPE_JPEG        0
@@ -263,10 +213,28 @@ enum WEBUI_LEVEL{
   WEBUI_LEVEL_NEVER      = 99
 };
 
+struct vdev_usrctrl_ctx {
+    char          *ctrl_name;       /* The name or description of the ID as requested by user*/
+    int            ctrl_value;      /* The value that the user wants the control set to*/
+};
+
+struct vdev_context {
+    /* As v4l2 and bktr get rewritten, put thread specific items here
+     * Rather than use conf options directly, copy from conf to here
+     * to handle cross thread webui changes which could cause problems
+     */
+    struct vdev_usrctrl_ctx *usrctrl_array;     /*Array of the controls the user specified*/
+    int usrctrl_count;                          /*Count of the controls the user specified*/
+    int update_parms;                           /*Bool for whether to update the parameters on the device*/
+};
+
+
 struct image_data {
     unsigned char *image_norm;
     unsigned char *image_high;
     int diffs;
+    int64_t        idnbr_norm;
+    int64_t        idnbr_high;
     struct timeval timestamp_tv;
     int shot;                   /* Sub second timestamp count */
 
@@ -282,14 +250,12 @@ struct image_data {
 
     int total_labels;
 
-#ifdef HAVE_FFMPEG
-    AVPacket    packet_norm;    /* The packet from the normal resolution rtsp thread */
-    AVPacket    packet_high;    /* The packet from the high resolution rtsp thread */
-#else
-    int         packet_norm;    /* Dummy variables for the without ffmpeg option */
-    int         packet_high;    /* Dummy variables for the without ffmpeg option */
-#endif // HAVE_FFMPEG
+};
 
+struct stream_data {
+    unsigned char   *jpeg_data; /* Image compressed as JPG */
+    long            jpeg_size;  /* The number of bytes for jpg */
+    int             cnct_count; /* Counter of the number of connections */
 };
 
 /*
@@ -319,7 +285,10 @@ struct image_data {
  */
 
 /* date/time drawing, draw.c */
-int draw_text(unsigned char *image, unsigned int startx, unsigned int starty, unsigned int width, const char *text, unsigned int factor);
+int draw_text(unsigned char *image,
+              int width, int height,
+              int startx, int starty,
+              const char *text, int factor);
 int initialize_chars(void);
 
 struct images {
@@ -337,6 +306,7 @@ struct images {
     unsigned char *smartmask;
     unsigned char *smartmask_final;
     unsigned char *common_buffer;
+    unsigned char *substream_image;
 
     unsigned char *mask_privacy;      /* Buffer for the privacy mask values */
     unsigned char *mask_privacy_uv;   /* Buffer for the privacy U&V values */
@@ -406,14 +376,18 @@ struct context {
     struct config conf;
     struct images imgs;
     struct trackoptions track;
+    int                 track_posx;
+    int                 track_posy;
 
     enum CAMERA_TYPE      camera_type;
     struct netcam_context *netcam;
 #ifdef HAVE_MMAL
     struct mmalcam_context *mmalcam;
 #endif
-    rtsp_context *rtsp;              /* this structure contains the context for normal RTSP connection */
-    rtsp_context *rtsp_high;         /* this structure contains the context for high resolution RTSP connection */
+    struct rtsp_context *rtsp;              /* this structure contains the context for normal RTSP connection */
+    struct rtsp_context *rtsp_high;         /* this structure contains the context for high resolution RTSP connection */
+
+    struct vdev_context *vdev;              /* Structure for v4l2 and bktr device information */
 
     struct image_data *current_image;       /* Pointer to a structure where the image, diffs etc is stored */
     unsigned int new_img;
@@ -425,12 +399,15 @@ struct context {
 
     int noise;
     int threshold;
+    int threshold_maximum;
     int diffs_last[THRESHOLD_TUNE_LENGTH];
     int smartmask_speed;
 
+
     /* Commands to the motion thread */
     volatile unsigned int snapshot;    /* Make a snapshot */
-    volatile unsigned int makemovie;   /* End a movie */
+    volatile unsigned int event_stop;  /* Boolean for whether to stop a event */
+    volatile unsigned int event_user;  /* Boolean for whether to user triggered an event */
     volatile unsigned int finish;      /* End the thread */
     volatile unsigned int restart;     /* Restart the thread when it ends */
     /* Is the motion thread running */
@@ -446,10 +423,10 @@ struct context {
     int prev_event;
     unsigned long long database_event_id;
     unsigned int lightswitch_framecounter;
-    char text_event_string[PATH_MAX];        /* The text for conv. spec. %C -
-                                                we assume PATH_MAX normally 4096 characters is fine */
-    int postcap;                             /* downcounter, frames left to to send post event */
+    char text_event_string[PATH_MAX];        /* The text for conv. spec. %C - */
+    int text_scale;
 
+    int postcap;                             /* downcounter, frames left to to send post event */
     int shots;
     unsigned int detecting_motion;
     struct tm *currenttime_tm;
@@ -474,13 +451,9 @@ struct context {
     struct stream stream;
     int stream_count;
 
-    struct stream substream;
-    int substream_count;
+    char hostname[PATH_MAX];
 
-
-#if defined(HAVE_MYSQL) || defined(HAVE_PGSQL) || defined(HAVE_SQLITE3)
     int sql_mask;
-#endif
 
 #ifdef HAVE_SQLITE3
     sqlite3 *database_sqlite3;
@@ -488,7 +461,6 @@ struct context {
 
 #ifdef HAVE_MYSQL
     MYSQL *database;
-
 #endif
 
 #ifdef HAVE_PGSQL
@@ -501,7 +473,7 @@ struct context {
     int movie_last_shot;
 
     struct ffmpeg *ffmpeg_output;
-    struct ffmpeg *ffmpeg_output_debug;
+    struct ffmpeg *ffmpeg_output_motion;
     struct ffmpeg *ffmpeg_timelapse;
 
     char timelapsefilename[PATH_MAX];
@@ -517,7 +489,6 @@ struct context {
     int minimum_frame_time_downcounter;
     unsigned int get_image;    /* Flag used to signal that we capture new image when we run the loop */
 
-    unsigned int text_size_factor;
     long int required_frame_time, frame_delay;
 
     long int rolling_average_limit;
@@ -535,6 +506,20 @@ struct context {
 
     unsigned int passflag;  //only purpose is to flag first frame vs all others.....
     int rolling_frame;
+
+    struct MHD_Daemon   *webcontrol_daemon;
+    struct MHD_Daemon   *webstream_daemon;
+    char                webcontrol_digest_rand[8];
+    char                webstream_digest_rand[8];
+    int                 camera_id;
+
+    pthread_mutex_t     mutex_stream;
+
+    struct stream_data  stream_norm;    /* Copy of the image to use for web stream*/
+    struct stream_data  stream_sub;     /* Copy of the image to use for web stream*/
+    struct stream_data  stream_motion;  /* Copy of the image to use for web stream*/
+    struct stream_data  stream_source;  /* Copy of the image to use for web stream*/
+
 
 };
 
